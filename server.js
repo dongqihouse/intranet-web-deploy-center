@@ -109,17 +109,16 @@ async function main() {
 
       try {
         await extractZip(filePath, sourceDir);
-        const projectRoot = await resolveProjectRoot(sourceDir);
-        const packageJson = path.join(projectRoot, "package.json");
-
-        if (!(await exists(packageJson))) {
-          throw httpError(400, "zip 根目录需要包含 package.json");
-        }
+        const projectRoot = await resolveProjectRoot(
+          sourceDir,
+          input.projectSubdir
+        );
 
         const service = {
           id: serviceId,
           name: input.name,
           port: input.port,
+          projectSubdir: input.projectSubdir,
           installCommand: input.installCommand,
           startCommand: input.startCommand,
           note: input.note,
@@ -287,6 +286,7 @@ async function serializeService(req, service) {
     id: service.id,
     name: service.name,
     port: service.port,
+    projectSubdir: service.projectSubdir || "",
     installCommand: service.installCommand,
     startCommand: service.startCommand,
     note: service.note,
@@ -309,6 +309,7 @@ async function serializeService(req, service) {
 function parseServiceInput(body) {
   const name = String(body.name || "").trim();
   const port = Number(body.port);
+  const projectSubdir = normalizeProjectSubdir(body.projectSubdir);
   const installCommand = String(body.installCommand || "npm install").trim();
   const startCommand = String(body.startCommand || "").trim();
   const note = String(body.note || "").trim();
@@ -332,6 +333,7 @@ function parseServiceInput(body) {
   return {
     name,
     port,
+    projectSubdir,
     installCommand,
     startCommand,
     note,
@@ -448,7 +450,29 @@ async function extractZip(zipPath, destination) {
   }
 }
 
-async function resolveProjectRoot(sourceDir) {
+async function resolveProjectRoot(sourceDir, projectSubdir) {
+  const archiveRoot = await resolveArchiveRoot(sourceDir);
+
+  if (!projectSubdir) {
+    await assertPackageJson(archiveRoot, "zip 根目录需要包含 package.json");
+    return archiveRoot;
+  }
+
+  const candidates = uniquePaths([
+    resolveInside(archiveRoot, projectSubdir),
+    resolveInside(sourceDir, projectSubdir),
+  ]);
+
+  for (const candidate of candidates) {
+    if (await exists(path.join(candidate, "package.json"))) {
+      return candidate;
+    }
+  }
+
+  throw httpError(400, `项目目录 ${projectSubdir} 需要包含 package.json`);
+}
+
+async function resolveArchiveRoot(sourceDir) {
   if (await exists(path.join(sourceDir, "package.json"))) {
     return sourceDir;
   }
@@ -463,6 +487,56 @@ async function resolveProjectRoot(sourceDir) {
   }
 
   return sourceDir;
+}
+
+async function assertPackageJson(directory, message) {
+  if (!(await exists(path.join(directory, "package.json")))) {
+    throw httpError(400, message);
+  }
+}
+
+function normalizeProjectSubdir(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw === "." || raw === "./") {
+    return "";
+  }
+
+  if (raw.length > 200) {
+    throw httpError(400, "项目目录不能超过 200 个字符");
+  }
+
+  const normalized = raw.replace(/\\/g, "/");
+  if (
+    normalized.includes("\0") ||
+    path.isAbsolute(normalized) ||
+    /^[a-z]:\//i.test(normalized)
+  ) {
+    throw httpError(400, "项目目录必须是 zip 内的相对路径");
+  }
+
+  const parts = normalized.split("/").filter((part) => part && part !== ".");
+  if (parts.some((part) => part === "..")) {
+    throw httpError(400, "项目目录不能包含 ..");
+  }
+
+  return parts.join("/");
+}
+
+function resolveInside(root, relativePath) {
+  const rootPath = path.resolve(root);
+  const targetPath = path.resolve(rootPath, relativePath);
+  const insideRoot =
+    targetPath === rootPath || targetPath.startsWith(`${rootPath}${path.sep}`);
+
+  if (!insideRoot) {
+    throw httpError(400, "项目目录不能跳出 zip 根目录");
+  }
+
+  return targetPath;
+}
+
+function uniquePaths(paths) {
+  return Array.from(new Set(paths));
 }
 
 async function startInstall(service) {

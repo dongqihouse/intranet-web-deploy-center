@@ -40,6 +40,8 @@ macOS 使用 Docker Desktop 时，默认不要挂载 `/data/web-deploy-center` �
 
 上传 zip 包需要包含 `package.json`。如果 zip 外层只有一个项目目录，系统会自动把它识别为项目根目录。
 
+如果 `package.json` 不在 zip 根目录，可以在 Dashboard 的「项目目录」里填写 zip 内相对路径。比如上传的包结构是 `feedback/web/package.json`，项目目录填 `web` 或 `feedback/web` 都可以，安装命令和启动命令会在这个目录里执行。
+
 推荐命令：
 
 ```bash

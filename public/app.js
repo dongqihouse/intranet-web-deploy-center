@@ -103,7 +103,8 @@ function renderServiceCard(service) {
   node.querySelector(".status-pill").classList.add(status[1]);
   node.querySelector(".path-line").textContent = service.projectRoot;
   node.querySelector(".command-line").textContent = service.startCommand;
-  node.querySelector(".note-line").textContent = service.note;
+  node.querySelector(".note-line").textContent =
+    service.note || service.projectSubdir || "";
 
   const isRunning = service.status === "running";
   const isInstalling = service.status === "installing";
