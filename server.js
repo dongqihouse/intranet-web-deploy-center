@@ -587,6 +587,228 @@ function uniquePaths(paths) {
   return Array.from(new Set(paths));
 }
 
+async function repairNpmBinLinks(service) {
+  const nodeModulesDir = path.join(service.projectRoot, "node_modules");
+  if (!(await exists(nodeModulesDir))) {
+    return;
+  }
+
+  const binDir = path.join(nodeModulesDir, ".bin");
+  await fsp.mkdir(binDir, { recursive: true });
+
+  let repaired = await repairExistingNpmBinEntries(binDir, nodeModulesDir);
+  const packageDirs = await listNodeModulePackageDirs(nodeModulesDir);
+
+  for (const packageDir of packageDirs) {
+    const packageJson = path.join(packageDir, "package.json");
+    if (!(await exists(packageJson))) {
+      continue;
+    }
+
+    const packageData = await readJsonFile(packageJson);
+    const bins = getPackageBins(packageData);
+    for (const [binName, binTarget] of bins) {
+      const targetPath = resolvePackageBinTarget(packageDir, binTarget);
+      if (!targetPath) {
+        continue;
+      }
+
+      if (!(await exists(targetPath))) {
+        continue;
+      }
+
+      await fsp.chmod(targetPath, 0o755).catch(() => {});
+      repaired += await ensureNpmBinSymlink(binDir, binName, targetPath);
+    }
+  }
+
+  if (repaired > 0) {
+    await appendLog(service, `npm bin links repaired: ${repaired}`);
+  }
+}
+
+async function repairExistingNpmBinEntries(binDir, nodeModulesDir) {
+  const entries = await fsp.readdir(binDir, { withFileTypes: true });
+  let repaired = 0;
+
+  for (const entry of entries) {
+    const binPath = path.join(binDir, entry.name);
+    const stat = await fsp.lstat(binPath);
+
+    if (stat.isSymbolicLink()) {
+      const linkTarget = await fsp.readlink(binPath);
+      const targetPath = resolveSafeNpmBinTarget(
+        binDir,
+        linkTarget,
+        nodeModulesDir
+      );
+      await fsp.chmod(targetPath, 0o755).catch(() => {});
+      continue;
+    }
+
+    if (!stat.isFile()) {
+      continue;
+    }
+
+    const linkTarget = await readPlainLinkTarget(binPath);
+    if (!linkTarget) {
+      if ((stat.mode & 0o111) === 0) {
+        await fsp.chmod(binPath, 0o755);
+        repaired += 1;
+      }
+      continue;
+    }
+
+    const targetPath = resolveSafeNpmBinTarget(
+      binDir,
+      linkTarget,
+      nodeModulesDir
+    );
+    await fsp.chmod(targetPath, 0o755).catch(() => {});
+    await fsp.unlink(binPath);
+    await fsp.symlink(linkTarget, binPath);
+    repaired += 1;
+  }
+
+  return repaired;
+}
+
+async function readPlainLinkTarget(filePath) {
+  const text = await fsp.readFile(filePath, "utf8").catch(() => "");
+  const linkTarget = text.trim();
+
+  if (
+    !linkTarget ||
+    linkTarget.includes("\0") ||
+    linkTarget.includes("\n") ||
+    linkTarget.startsWith("#!") ||
+    path.isAbsolute(linkTarget)
+  ) {
+    return "";
+  }
+
+  return linkTarget;
+}
+
+function resolveSafeNpmBinTarget(binDir, linkTarget, nodeModulesDir) {
+  const targetPath = path.resolve(binDir, linkTarget);
+  const nodeModulesRoot = path.resolve(nodeModulesDir);
+  const insideNodeModules =
+    targetPath === nodeModulesRoot ||
+    targetPath.startsWith(`${nodeModulesRoot}${path.sep}`);
+
+  if (!insideNodeModules) {
+    throw httpError(400, "node_modules/.bin 包含不安全链接");
+  }
+
+  return targetPath;
+}
+
+async function listNodeModulePackageDirs(nodeModulesDir) {
+  const entries = await fsp.readdir(nodeModulesDir, { withFileTypes: true });
+  const packageDirs = [];
+
+  for (const entry of entries) {
+    if (entry.name === ".bin" || entry.name.startsWith(".")) {
+      continue;
+    }
+
+    const entryPath = path.join(nodeModulesDir, entry.name);
+    if (entry.name.startsWith("@") && entry.isDirectory()) {
+      const scopedEntries = await fsp.readdir(entryPath, { withFileTypes: true });
+      for (const scopedEntry of scopedEntries) {
+        if (scopedEntry.isDirectory() || scopedEntry.isSymbolicLink()) {
+          packageDirs.push(path.join(entryPath, scopedEntry.name));
+        }
+      }
+      continue;
+    }
+
+    if (entry.isDirectory() || entry.isSymbolicLink()) {
+      packageDirs.push(entryPath);
+    }
+  }
+
+  return packageDirs;
+}
+
+async function readJsonFile(filePath) {
+  try {
+    return JSON.parse(await fsp.readFile(filePath, "utf8"));
+  } catch (_error) {
+    return {};
+  }
+}
+
+function getPackageBins(packageData) {
+  const bins = [];
+
+  if (typeof packageData.bin === "string" && packageData.name) {
+    bins.push([getPackageBinName(packageData.name), packageData.bin]);
+  } else if (packageData.bin && typeof packageData.bin === "object") {
+    for (const [binName, binTarget] of Object.entries(packageData.bin)) {
+      bins.push([binName, binTarget]);
+    }
+  }
+
+  return bins.filter(
+    ([binName, binTarget]) =>
+      isSafeBinName(binName) && typeof binTarget === "string" && binTarget.trim()
+  );
+}
+
+function resolvePackageBinTarget(packageDir, binTarget) {
+  const normalized = String(binTarget).trim().replace(/\\/g, "/");
+  if (
+    !normalized ||
+    normalized.includes("\0") ||
+    path.isAbsolute(normalized)
+  ) {
+    return null;
+  }
+
+  const parts = normalized.split("/").filter((part) => part && part !== ".");
+  if (parts.some((part) => part === "..")) {
+    return null;
+  }
+
+  return path.resolve(packageDir, parts.join("/"));
+}
+
+function getPackageBinName(packageName) {
+  return String(packageName).split("/").pop();
+}
+
+function isSafeBinName(binName) {
+  return (
+    typeof binName === "string" &&
+    Boolean(binName) &&
+    !binName.includes("/") &&
+    !binName.includes("\\") &&
+    !binName.includes("\0")
+  );
+}
+
+async function ensureNpmBinSymlink(binDir, binName, targetPath) {
+  const binPath = path.join(binDir, binName);
+  const linkTarget = path.relative(binDir, targetPath);
+
+  if (await exists(binPath)) {
+    const stat = await fsp.lstat(binPath);
+    if (stat.isSymbolicLink()) {
+      const currentTarget = await fsp.readlink(binPath);
+      if (currentTarget === linkTarget) {
+        return 0;
+      }
+    }
+
+    await fsp.rm(binPath, { force: true });
+  }
+
+  await fsp.symlink(linkTarget, binPath);
+  return 1;
+}
+
 async function startInstall(service) {
   service.status = "installing";
   service.updatedAt = new Date().toISOString();
@@ -615,10 +837,24 @@ async function startInstall(service) {
     }
 
     installProcesses.delete(service.id);
-    service.status = code === 0 ? "stopped" : "error";
+    let binRepairError = null;
+
+    if (code === 0) {
+      try {
+        await repairNpmBinLinks(service);
+      } catch (error) {
+        binRepairError = error;
+      }
+    }
+
+    service.status = code === 0 && !binRepairError ? "stopped" : "error";
     service.lastExitCode = code;
     service.lastSignal = signal;
-    service.lastError = code === 0 ? null : `安装命令退出码 ${code}`;
+    service.lastError = binRepairError
+      ? binRepairError.message
+      : code === 0
+        ? null
+        : `安装命令退出码 ${code}`;
     service.updatedAt = new Date().toISOString();
     await appendLog(service, `install exited: code=${code} signal=${signal}`);
     await saveState();
@@ -641,6 +877,8 @@ async function startService(service, reason) {
   if (!(await canBindPort(service.port))) {
     throw httpError(409, "端口已经被其他进程监听");
   }
+
+  await repairNpmBinLinks(service);
 
   const child = spawnServiceCommand(service, service.startCommand);
   const entry = { child, stopping: false };
