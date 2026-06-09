@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const express = require("express");
 const fs = require("fs");
 const fsp = require("fs/promises");
+const http = require("http");
 const multer = require("multer");
 const net = require("net");
 const os = require("os");
@@ -29,6 +30,7 @@ const app = express();
 const services = new Map();
 const serviceProcesses = new Map();
 const installProcesses = new Map();
+const jsonParser = express.json({ limit: "1mb" });
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -44,7 +46,14 @@ const upload = multer({
   },
 });
 
-app.use(express.json({ limit: "1mb" }));
+app.use((req, res, next) => {
+  if (req.path.startsWith("/services/")) {
+    next();
+    return;
+  }
+
+  jsonParser(req, res, next);
+});
 app.use(express.static(path.join(__dirname, "public")));
 
 main().catch((error) => {
@@ -238,7 +247,15 @@ async function main() {
     res.json({ ok: true });
   });
 
-  app.listen(CENTER_PORT, "0.0.0.0", () => {
+  app.get("/services/:id", (req, res) => {
+    res.redirect(302, `${req.originalUrl}/`);
+  });
+
+  app.use("/services/:id/", proxyServiceRequest);
+
+  const server = http.createServer(app);
+  server.on("upgrade", proxyServiceUpgrade);
+  server.listen(CENTER_PORT, "0.0.0.0", () => {
     console.log(`deploy center listening on :${CENTER_PORT}`);
   });
 }
@@ -280,7 +297,7 @@ async function saveState() {
 }
 
 async function serializeService(req, service) {
-  const host = getRequestHost(req);
+  const host = getRequestHostWithPort(req);
   const status = getRuntimeStatus(service);
   const portListening = await isPortListening(service.port);
 
@@ -297,7 +314,7 @@ async function serializeService(req, service) {
     status,
     pid: serviceProcesses.get(service.id)?.child.pid || null,
     portListening,
-    url: `http://${host}:${service.port}`,
+    url: `http://${host}${getServiceBasePath(service)}`,
     createdAt: service.createdAt,
     updatedAt: service.updatedAt,
     lastStartedAt: service.lastStartedAt,
@@ -315,7 +332,10 @@ function parseServiceInput(body) {
   const installCommand = String(
     body.installCommand || "rm -rf node_modules && npm install --include=dev"
   ).trim();
-  const startCommand = String(body.startCommand || "").trim();
+  const startCommand = String(
+    body.startCommand ||
+      "npm run dev -- --host 0.0.0.0 --port $PORT --strictPort --base $SERVICE_BASE_PATH"
+  ).trim();
   const note = String(body.note || "").trim();
 
   if (!name || name.length > 80) {
@@ -977,6 +997,8 @@ function commandEnv(service) {
     npm_config_port: String(service.port),
     npm_config_include: process.env.npm_config_include || "dev",
     npm_config_production: process.env.npm_config_production || "false",
+    SERVICE_ID: service.id,
+    SERVICE_BASE_PATH: getServiceBasePath(service),
     NEXT_TELEMETRY_DISABLED: process.env.NEXT_TELEMETRY_DISABLED || "1",
     BROWSER: "none",
   };
@@ -1072,6 +1094,138 @@ function getRuntimeStatus(service) {
   return service.status || "stopped";
 }
 
+function proxyServiceRequest(req, res) {
+  const service = getServiceOrThrow(req.params.id);
+
+  if (!serviceProcesses.has(service.id)) {
+    sendError(res, httpError(409, "服务未运行"));
+    return;
+  }
+
+  const proxyReq = http.request(
+    {
+      hostname: "127.0.0.1",
+      port: service.port,
+      method: req.method,
+      path: req.originalUrl,
+      headers: getProxyRequestHeaders(req, service),
+    },
+    (proxyRes) => {
+      const headers = getProxyResponseHeaders(proxyRes.headers, service);
+      res.writeHead(proxyRes.statusCode || 502, headers);
+      proxyRes.pipe(res);
+    }
+  );
+
+  proxyReq.on("error", (error) => {
+    if (!res.headersSent) {
+      sendError(res, httpError(502, `服务代理失败: ${error.message}`));
+    } else {
+      res.destroy(error);
+    }
+  });
+
+  req.pipe(proxyReq);
+}
+
+function proxyServiceUpgrade(req, socket, head) {
+  const service = getUpgradeService(req);
+  if (!service || !serviceProcesses.has(service.id)) {
+    socket.destroy();
+    return;
+  }
+
+  const upstream = net.createConnection(
+    { host: "127.0.0.1", port: service.port },
+    () => {
+      upstream.write(`${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`);
+      writeRawHeaders(upstream, req.rawHeaders);
+      upstream.write("\r\n");
+
+      if (head.length > 0) {
+        upstream.write(head);
+      }
+
+      upstream.pipe(socket);
+      socket.pipe(upstream);
+    }
+  );
+
+  upstream.on("error", () => socket.destroy());
+  socket.on("error", () => upstream.destroy());
+}
+
+function getUpgradeService(req) {
+  const url = new URL(req.url || "/", `http://localhost:${CENTER_PORT}`);
+  const match = url.pathname.match(/^\/services\/([^/]+)\//);
+  if (!match) {
+    return null;
+  }
+
+  return services.get(match[1]) || null;
+}
+
+function writeRawHeaders(stream, rawHeaders) {
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    stream.write(`${rawHeaders[index]}: ${rawHeaders[index + 1]}\r\n`);
+  }
+}
+
+function getProxyRequestHeaders(req, service) {
+  return {
+    ...req.headers,
+    host: `127.0.0.1:${service.port}`,
+    "x-forwarded-host": req.get("host") || "",
+    "x-forwarded-proto": req.protocol,
+    "x-forwarded-prefix": getServiceBasePath(service).replace(/\/$/, ""),
+  };
+}
+
+function getProxyResponseHeaders(headers, service) {
+  const nextHeaders = { ...headers };
+  const location = nextHeaders.location;
+
+  if (typeof location === "string") {
+    nextHeaders.location = rewriteProxyLocation(location, service);
+  }
+
+  return nextHeaders;
+}
+
+function rewriteProxyLocation(location, service) {
+  const internalOrigins = [
+    `http://127.0.0.1:${service.port}`,
+    `http://localhost:${service.port}`,
+  ];
+
+  for (const origin of internalOrigins) {
+    if (location.startsWith(origin)) {
+      return joinProxyPath(
+        getServiceBasePath(service),
+        location.slice(origin.length)
+      );
+    }
+  }
+
+  return location;
+}
+
+function joinProxyPath(basePath, suffix) {
+  if (!suffix) {
+    return basePath;
+  }
+
+  if (suffix.startsWith("/")) {
+    return `${basePath}${suffix.slice(1)}`;
+  }
+
+  return `${basePath}${suffix}`;
+}
+
+function getServiceBasePath(service) {
+  return `/services/${service.id}/`;
+}
+
 function getServiceOrThrow(id) {
   const service = services.get(id);
   if (!service) {
@@ -1104,9 +1258,8 @@ function slugify(value) {
   return normalized || `service-${crypto.randomBytes(4).toString("hex")}`;
 }
 
-function getRequestHost(req) {
-  const hostHeader = req.get("host") || `localhost:${CENTER_PORT}`;
-  return hostHeader.replace(/:\d+$/, "");
+function getRequestHostWithPort(req) {
+  return req.get("host") || `localhost:${CENTER_PORT}`;
 }
 
 function httpError(status, message) {

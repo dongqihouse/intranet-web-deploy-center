@@ -48,7 +48,7 @@ macOS 使用 Docker Desktop 时，默认不要挂载 `/data/web-deploy-center` �
 
 ```bash
 rm -rf node_modules && npm install --include=dev
-npm run dev -- --host 0.0.0.0
+npm run dev -- --host 0.0.0.0 --port $PORT --strictPort --base $SERVICE_BASE_PATH
 ```
 
 系统会自动注入：
@@ -61,6 +61,7 @@ VITE_PORT=用户填写的端口
 VITE_HOST=0.0.0.0
 npm_config_port=用户填写的端口
 npm_config_host=0.0.0.0
+SERVICE_BASE_PATH=/services/服务ID/
 ```
 
 Dashboard 访问：
@@ -69,7 +70,13 @@ Dashboard 访问：
 http://服务器IP:10000
 ```
 
-默认 Docker 配置只发布 Dashboard 的 `10000`。上传项目填写的服务端口用于容器内部进程监听和冲突检测；如果要让用户服务也通过独立端口直接暴露到局域网，需要另外发布对应端口或接入反向代理。
+默认 Docker 配置只发布 Dashboard 的 `10000`。上传项目填写的服务端口用于容器内部进程监听和冲突检测；外部用户通过 Dashboard 代理访问服务：
+
+```text
+http://服务器IP:10000/services/服务ID/
+```
+
+可以同时运行多个服务，不需要为每个服务单独发布 Docker 端口。每个服务在容器内部监听自己的端口，对外统一通过 Dashboard 的 `10000` 和不同路径区分。
 
 ## 生命周期
 
