@@ -19,6 +19,8 @@ const SERVICES_DIR = path.join(DATA_DIR, "services");
 const TMP_DIR = path.join(DATA_DIR, "tmp");
 const STATE_FILE = path.join(DATA_DIR, "services.json");
 const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 512);
+const ZIP_MODE_SYMLINK = 0o120000;
+const ZIP_MODE_TYPE_MASK = 0o170000;
 
 fs.mkdirSync(SERVICES_DIR, { recursive: true });
 fs.mkdirSync(TMP_DIR, { recursive: true });
@@ -445,9 +447,55 @@ async function extractZip(zipPath, destination) {
       continue;
     }
 
+    const mode = getZipEntryMode(entry);
+    if ((mode & ZIP_MODE_TYPE_MASK) === ZIP_MODE_SYMLINK) {
+      await createSafeSymlink(entry, targetPath, destinationRoot);
+      continue;
+    }
+
     await fsp.mkdir(path.dirname(targetPath), { recursive: true });
     await fsp.writeFile(targetPath, entry.getData());
+    await applyZipEntryMode(targetPath, mode, entryName);
   }
+}
+
+function getZipEntryMode(entry) {
+  return (entry.header.attr >>> 16) & 0o777777;
+}
+
+async function createSafeSymlink(entry, targetPath, destinationRoot) {
+  const linkTarget = entry.getData().toString("utf8");
+
+  if (
+    !linkTarget ||
+    linkTarget.includes("\0") ||
+    path.isAbsolute(linkTarget)
+  ) {
+    throw httpError(400, "zip 文件包含不安全符号链接");
+  }
+
+  const resolvedLinkTarget = path.resolve(path.dirname(targetPath), linkTarget);
+  const insideDestination =
+    resolvedLinkTarget === destinationRoot ||
+    resolvedLinkTarget.startsWith(`${destinationRoot}${path.sep}`);
+
+  if (!insideDestination) {
+    throw httpError(400, "zip 文件包含不安全符号链接");
+  }
+
+  await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+  await fsp.symlink(linkTarget, targetPath);
+}
+
+async function applyZipEntryMode(targetPath, mode, entryName) {
+  const executable = Boolean(mode & 0o111) || isNodeBinPath(entryName);
+  if (executable) {
+    await fsp.chmod(targetPath, 0o755);
+  }
+}
+
+function isNodeBinPath(entryName) {
+  return /(^|\/)node_modules\/\.bin\/[^/]+$/.test(entryName);
 }
 
 async function resolveProjectRoot(sourceDir, projectSubdir) {

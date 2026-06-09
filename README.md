@@ -42,6 +42,8 @@ macOS 使用 Docker Desktop 时，默认不要挂载 `/data/web-deploy-center` �
 
 如果 `package.json` 不在 zip 根目录，可以在 Dashboard 的「项目目录」里填写 zip 内相对路径。比如上传的包结构是 `feedback/web/package.json`，项目目录填 `web` 或 `feedback/web` 都可以，安装命令和启动命令会在这个目录里执行。
 
+推荐上传不包含 `node_modules` 的源码包，上传后先点击「安装」再点击「启动」。如果 zip 中已经包含 `node_modules`，系统会在解压时保留安全符号链接和可执行权限，避免 `vite: Permission denied` 这类 npm bin 权限问题。
+
 推荐命令：
 
 ```bash
