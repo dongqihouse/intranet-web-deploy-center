@@ -123,7 +123,6 @@ async function main() {
           installCommand: input.installCommand,
           startCommand: input.startCommand,
           note: input.note,
-          autostart: input.autostart,
           serviceDir,
           sourceDir,
           projectRoot,
@@ -240,7 +239,6 @@ async function main() {
 
   app.listen(CENTER_PORT, "0.0.0.0", () => {
     console.log(`deploy center listening on :${CENTER_PORT}`);
-    autostartServices();
   });
 }
 
@@ -265,10 +263,14 @@ async function saveState() {
   const data = {
     version: 1,
     savedAt: new Date().toISOString(),
-    services: Array.from(services.values()).map((service) => ({
-      ...service,
-      status: serviceProcesses.has(service.id) ? "running" : service.status,
-    })),
+    services: Array.from(services.values()).map((service) => {
+      const legacyStartupKey = "auto" + "start";
+      const { [legacyStartupKey]: _unused, ...persistedService } = service;
+      return {
+        ...persistedService,
+        status: serviceProcesses.has(service.id) ? "running" : service.status,
+      };
+    }),
   };
   const suffix = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
   const tmpFile = `${STATE_FILE}.${process.pid}.${suffix}.tmp`;
@@ -288,7 +290,6 @@ async function serializeService(req, service) {
     installCommand: service.installCommand,
     startCommand: service.startCommand,
     note: service.note,
-    autostart: service.autostart,
     serviceDir: service.serviceDir,
     projectRoot: service.projectRoot,
     status,
@@ -311,7 +312,6 @@ function parseServiceInput(body) {
   const installCommand = String(body.installCommand || "npm install").trim();
   const startCommand = String(body.startCommand || "").trim();
   const note = String(body.note || "").trim();
-  const autostart = body.autostart === "true" || body.autostart === "on";
 
   if (!name || name.length > 80) {
     throw httpError(400, "服务名称需要在 1-80 个字符之间");
@@ -335,7 +335,6 @@ function parseServiceInput(body) {
     installCommand,
     startCommand,
     note,
-    autostart,
   };
 }
 
@@ -688,21 +687,6 @@ async function readTail(filePath, maxBytes) {
     return buffer.toString("utf8");
   } finally {
     await handle.close();
-  }
-}
-
-function autostartServices() {
-  for (const service of services.values()) {
-    if (!service.autostart) {
-      continue;
-    }
-
-    startService(service, "autostart").catch((error) => {
-      service.status = "error";
-      service.lastError = error.message;
-      appendLog(service, `autostart failed: ${error.message}`).catch(() => {});
-      saveState().catch(() => {});
-    });
   }
 }
 

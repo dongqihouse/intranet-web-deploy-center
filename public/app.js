@@ -103,8 +103,7 @@ function renderServiceCard(service) {
   node.querySelector(".status-pill").classList.add(status[1]);
   node.querySelector(".path-line").textContent = service.projectRoot;
   node.querySelector(".command-line").textContent = service.startCommand;
-  node.querySelector(".note-line").textContent =
-    service.note || (service.autostart ? "跟随 Dashboard 启动" : "");
+  node.querySelector(".note-line").textContent = service.note;
 
   const isRunning = service.status === "running";
   const isInstalling = service.status === "installing";
