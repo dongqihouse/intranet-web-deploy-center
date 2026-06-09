@@ -116,6 +116,7 @@ async function main() {
       const serviceId = uniqueServiceId(input.name);
       const serviceDir = path.join(SERVICES_DIR, serviceId);
       const sourceDir = path.join(serviceDir, "source");
+      await fsp.rm(serviceDir, { recursive: true, force: true });
       await fsp.mkdir(sourceDir, { recursive: true });
 
       try {
@@ -511,7 +512,32 @@ async function createSafeSymlink(entry, targetPath, destinationRoot) {
   }
 
   await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+  if (!(await removeExistingSymlinkTarget(targetPath))) {
+    return;
+  }
+
   await fsp.symlink(linkTarget, targetPath);
+}
+
+async function removeExistingSymlinkTarget(targetPath) {
+  let stat;
+
+  try {
+    stat = await fsp.lstat(targetPath);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return true;
+    }
+
+    throw error;
+  }
+
+  if (stat.isDirectory() && !stat.isSymbolicLink()) {
+    return false;
+  }
+
+  await fsp.rm(targetPath, { force: true });
+  return true;
 }
 
 async function applyZipEntryMode(targetPath, mode, entryName) {
