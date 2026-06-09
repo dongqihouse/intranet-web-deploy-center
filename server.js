@@ -465,22 +465,27 @@ function getZipEntryMode(entry) {
 
 async function createSafeSymlink(entry, targetPath, destinationRoot) {
   const linkTarget = entry.getData().toString("utf8");
+  const normalizedTarget = linkTarget.replace(/\\/g, "/");
 
   if (
     !linkTarget ||
     linkTarget.includes("\0") ||
-    path.isAbsolute(linkTarget)
+    path.isAbsolute(normalizedTarget) ||
+    path.win32.isAbsolute(linkTarget)
   ) {
-    throw httpError(400, "zip 文件包含不安全符号链接");
+    return;
   }
 
-  const resolvedLinkTarget = path.resolve(path.dirname(targetPath), linkTarget);
+  const resolvedLinkTarget = path.resolve(
+    path.dirname(targetPath),
+    normalizedTarget
+  );
   const insideDestination =
     resolvedLinkTarget === destinationRoot ||
     resolvedLinkTarget.startsWith(`${destinationRoot}${path.sep}`);
 
   if (!insideDestination) {
-    throw httpError(400, "zip 文件包含不安全符号链接");
+    return;
   }
 
   await fsp.mkdir(path.dirname(targetPath), { recursive: true });
