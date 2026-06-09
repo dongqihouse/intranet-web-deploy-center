@@ -47,7 +47,7 @@ const upload = multer({
 });
 
 app.use((req, res, next) => {
-  if (req.path.startsWith("/services/")) {
+  if (isProxyPassthroughPath(req.path)) {
     next();
     return;
   }
@@ -253,6 +253,7 @@ async function main() {
   });
 
   app.use("/services/:id/", proxyServiceRequest);
+  app.use(proxyServiceRootRequest);
 
   const server = http.createServer(app);
   server.on("upgrade", proxyServiceUpgrade);
@@ -1122,7 +1123,25 @@ function getRuntimeStatus(service) {
 
 function proxyServiceRequest(req, res) {
   const service = getServiceOrThrow(req.params.id);
+  proxyRequestToService(req, res, service);
+}
 
+function proxyServiceRootRequest(req, res, next) {
+  if (!isServiceRootProxyPath(req.path)) {
+    next();
+    return;
+  }
+
+  const service = getServiceFromRootProxyRequest(req);
+  if (!service) {
+    next();
+    return;
+  }
+
+  proxyRequestToService(req, res, service);
+}
+
+function proxyRequestToService(req, res, service) {
   if (!serviceProcesses.has(service.id)) {
     sendError(res, httpError(409, "服务未运行"));
     return;
@@ -1133,13 +1152,11 @@ function proxyServiceRequest(req, res) {
       hostname: "127.0.0.1",
       port: service.port,
       method: req.method,
-      path: req.originalUrl,
+      path: getProxyRequestPath(req, service),
       headers: getProxyRequestHeaders(req, service),
     },
     (proxyRes) => {
-      const headers = getProxyResponseHeaders(proxyRes.headers, service);
-      res.writeHead(proxyRes.statusCode || 502, headers);
-      proxyRes.pipe(res);
+      handleProxyResponse(req, res, proxyRes, service);
     }
   );
 
@@ -1152,6 +1169,103 @@ function proxyServiceRequest(req, res) {
   });
 
   req.pipe(proxyReq);
+}
+
+function handleProxyResponse(req, res, proxyRes, service) {
+  if (!shouldInjectProxyScript(req, proxyRes)) {
+    const headers = getProxyResponseHeaders(proxyRes.headers, service);
+    res.writeHead(proxyRes.statusCode || 502, headers);
+    proxyRes.pipe(res);
+    return;
+  }
+
+  const chunks = [];
+  proxyRes.on("data", (chunk) => chunks.push(chunk));
+  proxyRes.on("end", () => {
+    const headers = getProxyResponseHeaders(proxyRes.headers, service);
+    delete headers["content-length"];
+    const html = Buffer.concat(chunks).toString("utf8");
+    const body = injectServiceProxyScript(html, service);
+    res.writeHead(proxyRes.statusCode || 200, headers);
+    res.end(body);
+  });
+}
+
+function shouldInjectProxyScript(req, proxyRes) {
+  const contentType = String(proxyRes.headers["content-type"] || "");
+  const statusCode = proxyRes.statusCode || 0;
+
+  return (
+    req.method === "GET" &&
+    statusCode >= 200 &&
+    statusCode < 300 &&
+    contentType.includes("text/html")
+  );
+}
+
+function injectServiceProxyScript(html, service) {
+  const script = getServiceProxyScript(service);
+  if (html.includes("</head>")) {
+    return html.replace("</head>", `${script}</head>`);
+  }
+
+  return `${script}${html}`;
+}
+
+function getServiceProxyScript(service) {
+  const basePath = JSON.stringify(getServiceBasePath(service));
+  const serviceId = JSON.stringify(service.id);
+
+  return `<script>
+(() => {
+  const basePath = ${basePath};
+  const serviceId = ${serviceId};
+  const rootPrefixes = ["/__dataset", "/__reports", "/__evals"];
+  const appRoutes = ["/reports", "/datasets", "/evals"];
+
+  function shouldRewritePath(pathname) {
+    const prefixes = rootPrefixes.concat(appRoutes);
+    return prefixes.some((prefix) => pathname === prefix || pathname.startsWith(prefix + "/"));
+  }
+
+  function rewriteUrl(value) {
+    if (typeof value !== "string" || !value) return value;
+    const origin = window.location.origin;
+    const absolute = value.startsWith(origin + "/");
+    const suffix = absolute ? value.slice(origin.length) : value;
+    if (!suffix.startsWith("/") || suffix.startsWith(basePath)) return value;
+    const pathname = suffix.split(/[?#]/, 1)[0];
+    if (!shouldRewritePath(pathname)) return value;
+    const rewritten = basePath + suffix.slice(1);
+    return absolute ? origin + rewritten : rewritten;
+  }
+
+  const originalFetch = window.fetch;
+  window.fetch = function patchedFetch(input, init) {
+    if (typeof input === "string") {
+      return originalFetch.call(this, rewriteUrl(input), init);
+    }
+
+    if (input instanceof Request) {
+      const nextUrl = rewriteUrl(input.url);
+      if (nextUrl !== input.url) {
+        return originalFetch.call(this, new Request(nextUrl, input), init);
+      }
+    }
+
+    return originalFetch.call(this, input, init);
+  };
+
+  for (const method of ["pushState", "replaceState"]) {
+    const original = history[method];
+    history[method] = function patchedHistory(state, title, url) {
+      return original.call(this, state, title, url ? rewriteUrl(String(url)) : url);
+    };
+  }
+
+  document.cookie = "deploy_service_id=" + encodeURIComponent(serviceId) + "; path=/; SameSite=Lax";
+})();
+</script>`;
 }
 
 function proxyServiceUpgrade(req, socket, head) {
@@ -1205,6 +1319,78 @@ function getProxyRequestHeaders(req, service) {
     "x-forwarded-proto": req.protocol,
     "x-forwarded-prefix": getServiceBasePath(service).replace(/\/$/, ""),
   };
+}
+
+function getProxyRequestPath(req, service) {
+  const parsed = new URL(req.originalUrl, `http://localhost:${CENTER_PORT}`);
+  const basePath = getServiceBasePath(service);
+
+  if (parsed.pathname.startsWith(basePath)) {
+    const suffix = parsed.pathname.slice(basePath.length - 1);
+    if (isServiceRootProxyPath(suffix)) {
+      return `${suffix}${parsed.search}`;
+    }
+  }
+
+  return req.originalUrl;
+}
+
+function isProxyPassthroughPath(pathname) {
+  return pathname.startsWith("/services/") || isServiceRootProxyPath(pathname);
+}
+
+function isServiceRootProxyPath(pathname) {
+  const prefixes = [
+    "/__dataset",
+    "/__reports",
+    "/__evals",
+    "/reports",
+    "/datasets",
+    "/evals",
+  ];
+
+  return prefixes.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+  );
+}
+
+function getServiceFromRootProxyRequest(req) {
+  const refererServiceId = getServiceIdFromUrl(req.get("referer") || "");
+  const cookieServiceId = getCookieValue(req, "deploy_service_id");
+  const serviceId = refererServiceId || cookieServiceId;
+
+  if (!serviceId) {
+    return null;
+  }
+
+  return services.get(serviceId) || null;
+}
+
+function getServiceIdFromUrl(value) {
+  if (!value) {
+    return "";
+  }
+
+  try {
+    const url = new URL(value, `http://localhost:${CENTER_PORT}`);
+    const match = url.pathname.match(/^\/services\/([^/]+)(?:\/|$)/);
+    return match ? decodeURIComponent(match[1]) : "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function getCookieValue(req, name) {
+  const cookieHeader = req.get("cookie") || "";
+  const cookies = cookieHeader.split(";").map((part) => part.trim());
+  const prefix = `${name}=`;
+  const match = cookies.find((cookie) => cookie.startsWith(prefix));
+
+  if (!match) {
+    return "";
+  }
+
+  return decodeURIComponent(match.slice(prefix.length));
 }
 
 function getProxyResponseHeaders(headers, service) {
