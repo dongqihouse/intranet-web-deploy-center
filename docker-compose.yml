@@ -1,0 +1,15 @@
+services:
+  deploy-center:
+    build: .
+    container_name: intranet-web-deploy-center
+    restart: unless-stopped
+    ports:
+      - "10000-19999:10000-19999"
+    volumes:
+      - /data/web-deploy-center:/data/web-deploy-center
+    environment:
+      PORT: "10000"
+      DATA_DIR: /data/web-deploy-center
+      SERVICE_PORT_START: "10001"
+      SERVICE_PORT_END: "19999"
+      MAX_UPLOAD_MB: "512"

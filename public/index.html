@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>内网 Web 部署中心</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div>
+          <h1>内网 Web 部署中心</h1>
+          <p id="centerPortLabel">端口 10000</p>
+        </div>
+        <button class="button ghost" id="refreshButton" type="button">刷新</button>
+      </div>
+
+      <form id="deployForm" class="deploy-form">
+        <label>
+          <span>服务名称</span>
+          <input
+            name="name"
+            type="text"
+            autocomplete="off"
+            placeholder="team-homepage"
+            required
+          />
+        </label>
+
+        <div class="field-row">
+          <label>
+            <span>服务端口</span>
+            <input
+              id="portInput"
+              name="port"
+              type="number"
+              min="10001"
+              max="19999"
+              placeholder="10001"
+              required
+            />
+          </label>
+          <div class="port-box">
+            <span>端口状态</span>
+            <button class="button ghost status-button" id="checkPortButton" type="button">
+              待检查
+            </button>
+          </div>
+        </div>
+        <p class="range-text" id="portRangeLabel">范围 10001-19999</p>
+
+        <label>
+          <span>代码仓库 zip</span>
+          <input name="archive" type="file" accept=".zip,application/zip" required />
+        </label>
+
+        <label>
+          <span>安装命令</span>
+          <input name="installCommand" type="text" value="npm install" />
+        </label>
+
+        <label>
+          <span>启动命令</span>
+          <textarea
+            name="startCommand"
+            rows="3"
+            required
+            placeholder="npm run dev -- --host 0.0.0.0"
+          >npm run dev -- --host 0.0.0.0</textarea>
+        </label>
+
+        <label>
+          <span>备注</span>
+          <input name="note" type="text" placeholder="内网页面" />
+        </label>
+
+        <label class="checkbox-line">
+          <input name="autostart" type="checkbox" />
+          <span>跟随 Dashboard 启动</span>
+        </label>
+
+        <button class="button primary upload-button" id="uploadButton" type="submit">
+          上传部署
+        </button>
+      </form>
+    </aside>
+
+    <main class="main">
+      <section class="section-head">
+        <div>
+          <h2>已部署服务</h2>
+          <p id="serviceCount">0 个服务</p>
+        </div>
+      </section>
+
+      <section class="services-grid" id="servicesGrid"></section>
+
+      <section class="logs-panel">
+        <div class="logs-head">
+          <div>
+            <h2>日志</h2>
+            <p id="selectedLogLabel">选择服务查看日志</p>
+          </div>
+          <button class="button ghost" id="clearLogsButton" type="button" disabled>
+            清空视图
+          </button>
+        </div>
+        <pre class="terminal" id="terminal">选择服务查看日志</pre>
+      </section>
+    </main>
+
+    <template id="serviceCardTemplate">
+      <article class="service-card">
+        <div class="service-top">
+          <div class="service-title-block">
+            <h3></h3>
+            <p class="port-line"></p>
+          </div>
+          <span class="status-pill"></span>
+        </div>
+        <div class="meta-grid">
+          <code class="path-line"></code>
+          <code class="command-line"></code>
+        </div>
+        <p class="note-line"></p>
+        <div class="actions">
+          <button class="button ghost action-open" type="button">打开</button>
+          <button class="button ghost action-install" type="button">安装</button>
+          <button class="button success action-start" type="button">启动</button>
+          <button class="button ghost action-stop" type="button">停止</button>
+          <button class="button ghost action-restart" type="button">重启</button>
+          <button class="button ghost action-logs" type="button">日志</button>
+          <button class="button danger action-delete" type="button">删除</button>
+        </div>
+      </article>
+    </template>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
