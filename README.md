@@ -2,6 +2,8 @@
 
 单 Docker 容器的内网前端项目部署中心。Dashboard 监听 `10000`，上传的 Node/Vite/React/Next 项目使用 `10001-19999` 端口段。
 
+容器使用 host network，不会在启动时预先抢占 `10001-19999`。只有用户上传/启动服务时，系统才检查并使用用户填写的端口；如果端口不可用，Dashboard 会提示换端口。
+
 ## 运行
 
 ```bash
@@ -15,7 +17,7 @@ docker build -t intranet-web-deploy-center .
 docker run -d \
   --name intranet-web-deploy-center \
   --restart unless-stopped \
-  -p 10000-19999:10000-19999 \
+  --network host \
   -v "$(pwd)/data:/data/web-deploy-center" \
   intranet-web-deploy-center
 ```
@@ -33,6 +35,8 @@ http://服务器IP:10000
 ```
 
 macOS 使用 Docker Desktop 时，默认不要挂载 `/data/web-deploy-center` 这类根目录路径，否则可能出现 `Mounts denied`。项目目录在 `/Users` 下时，直接使用仓库内的 `./data` 最省心。
+
+macOS 还需要 Docker Desktop `4.34+` 并开启 host networking：`Settings -> Resources -> Network -> Enable host networking`，开启后 Apply and restart。
 
 ## 上传项目
 

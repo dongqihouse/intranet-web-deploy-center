@@ -17,6 +17,5 @@ ENV SERVICE_PORT_END=19999
 RUN mkdir -p /data/web-deploy-center
 
 EXPOSE 10000
-EXPOSE 10001-19999
 
 CMD ["node", "server.js"]
