@@ -3,7 +3,8 @@ services:
     build: .
     container_name: intranet-web-deploy-center
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "10000:10000"
     volumes:
       - ./data:/data/web-deploy-center
     environment:

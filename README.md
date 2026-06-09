@@ -2,7 +2,7 @@
 
 单 Docker 容器的内网前端项目部署中心。Dashboard 监听 `10000`，上传的 Node/Vite/React/Next 项目使用 `10001-19999` 端口段。
 
-容器使用 host network，不会在启动时预先抢占 `10001-19999`。只有用户上传/启动服务时，系统才检查并使用用户填写的端口；如果端口不可用，Dashboard 会提示换端口。
+容器启动时只发布 Dashboard 端口 `10000`，不会预先抢占 `10001-19999`。只有用户上传/启动服务时，系统才检查用户填写的端口；如果端口不可用，Dashboard 会提示换端口。
 
 ## 运行
 
@@ -17,7 +17,7 @@ docker build -t intranet-web-deploy-center .
 docker run -d \
   --name intranet-web-deploy-center \
   --restart unless-stopped \
-  --network host \
+  -p 10000:10000 \
   -v "$(pwd)/data:/data/web-deploy-center" \
   intranet-web-deploy-center
 ```
@@ -35,8 +35,6 @@ http://服务器IP:10000
 ```
 
 macOS 使用 Docker Desktop 时，默认不要挂载 `/data/web-deploy-center` 这类根目录路径，否则可能出现 `Mounts denied`。项目目录在 `/Users` 下时，直接使用仓库内的 `./data` 最省心。
-
-macOS 还需要 Docker Desktop `4.34+` 并开启 host networking：`Settings -> Resources -> Network -> Enable host networking`，开启后 Apply and restart。
 
 ## 上传项目
 
@@ -61,11 +59,13 @@ npm_config_port=用户填写的端口
 npm_config_host=0.0.0.0
 ```
 
-用户服务访问：
+Dashboard 访问：
 
 ```text
-http://服务器IP:10001
+http://服务器IP:10000
 ```
+
+默认 Docker 配置只发布 Dashboard 的 `10000`。上传项目填写的服务端口用于容器内部进程监听和冲突检测；如果要让用户服务也通过独立端口直接暴露到局域网，需要另外发布对应端口或接入反向代理。
 
 ## 生命周期
 
