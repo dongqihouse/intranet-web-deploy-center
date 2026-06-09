@@ -16,7 +16,7 @@ docker run -d \
   --name intranet-web-deploy-center \
   --restart unless-stopped \
   -p 10000-19999:10000-19999 \
-  -v /data/web-deploy-center:/data/web-deploy-center \
+  -v "$(pwd)/data:/data/web-deploy-center" \
   intranet-web-deploy-center
 ```
 
@@ -29,8 +29,10 @@ http://服务器IP:10000
 宿主机持久化目录：
 
 ```text
-/data/web-deploy-center
+./data
 ```
+
+macOS 使用 Docker Desktop 时，默认不要挂载 `/data/web-deploy-center` 这类根目录路径，否则可能出现 `Mounts denied`。项目目录在 `/Users` 下时，直接使用仓库内的 `./data` 最省心。
 
 ## 上传项目
 

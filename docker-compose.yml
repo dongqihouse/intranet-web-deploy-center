@@ -6,7 +6,7 @@ services:
     ports:
       - "10000-19999:10000-19999"
     volumes:
-      - /data/web-deploy-center:/data/web-deploy-center
+      - ./data:/data/web-deploy-center
     environment:
       PORT: "10000"
       DATA_DIR: /data/web-deploy-center
