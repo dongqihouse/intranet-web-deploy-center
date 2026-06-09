@@ -47,7 +47,7 @@ macOS 使用 Docker Desktop 时，默认不要挂载 `/data/web-deploy-center` �
 推荐命令：
 
 ```bash
-npm install
+rm -rf node_modules && npm install
 npm run dev -- --host 0.0.0.0
 ```
 

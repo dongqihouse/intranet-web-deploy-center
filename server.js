@@ -312,7 +312,9 @@ function parseServiceInput(body) {
   const name = String(body.name || "").trim();
   const port = Number(body.port);
   const projectSubdir = normalizeProjectSubdir(body.projectSubdir);
-  const installCommand = String(body.installCommand || "npm install").trim();
+  const installCommand = String(
+    body.installCommand || "rm -rf node_modules && npm install"
+  ).trim();
   const startCommand = String(body.startCommand || "").trim();
   const note = String(body.note || "").trim();
 
