@@ -248,10 +248,7 @@ async function main() {
     res.json({ ok: true });
   });
 
-  app.get("/services/:id", (req, res) => {
-    res.redirect(302, `${req.originalUrl}/`);
-  });
-
+  app.use("/services/:id", normalizeServiceProxyPath);
   app.use("/services/:id/", proxyServiceRequest);
   app.use(proxyServiceRootRequest);
 
@@ -1126,6 +1123,29 @@ function proxyServiceRequest(req, res) {
   proxyRequestToService(req, res, service);
 }
 
+function normalizeServiceProxyPath(req, res, next) {
+  const serviceId = req.params.id;
+  const parsed = new URL(req.originalUrl, `http://localhost:${CENTER_PORT}`);
+  const baseWithoutSlash = `/services/${serviceId}`;
+  const basePath = `${baseWithoutSlash}/`;
+
+  if (parsed.pathname === baseWithoutSlash) {
+    res.redirect(302, `${basePath}${parsed.search}`);
+    return;
+  }
+
+  if (parsed.pathname.startsWith(basePath)) {
+    const suffix = parsed.pathname.slice(basePath.length);
+    const normalizedSuffix = suffix.replace(/^\/+/, "");
+    if (suffix !== normalizedSuffix) {
+      res.redirect(302, `${basePath}${normalizedSuffix}${parsed.search}`);
+      return;
+    }
+  }
+
+  next();
+}
+
 function proxyServiceRootRequest(req, res, next) {
   if (!isServiceRootProxyPath(req.path)) {
     next();
@@ -1205,8 +1225,11 @@ function shouldInjectProxyScript(req, proxyRes) {
 
 function injectServiceProxyScript(html, service) {
   const script = getServiceProxyScript(service);
-  if (html.includes("</head>")) {
-    return html.replace("</head>", `${script}</head>`);
+  const headMatch = html.match(/<head\b[^>]*>/i);
+
+  if (headMatch && headMatch.index !== undefined) {
+    const insertAt = headMatch.index + headMatch[0].length;
+    return `${html.slice(0, insertAt)}${script}${html.slice(insertAt)}`;
   }
 
   return `${script}${html}`;
@@ -1223,6 +1246,8 @@ function getServiceProxyScript(service) {
   const rootPrefixes = ["/__dataset", "/__reports", "/__evals"];
   const appRoutes = ["/reports", "/datasets", "/evals"];
 
+  document.cookie = "deploy_service_id=" + encodeURIComponent(serviceId) + "; path=/; SameSite=Lax";
+
   function shouldRewritePath(pathname) {
     const prefixes = rootPrefixes.concat(appRoutes);
     return prefixes.some((prefix) => pathname === prefix || pathname.startsWith(prefix + "/"));
@@ -1233,9 +1258,19 @@ function getServiceProxyScript(service) {
     const origin = window.location.origin;
     const absolute = value.startsWith(origin + "/");
     const suffix = absolute ? value.slice(origin.length) : value;
-    if (!suffix.startsWith("/") || suffix.startsWith(basePath)) return value;
+    if (!suffix.startsWith("/")) return value;
+
+    if (suffix.startsWith(basePath)) {
+      const afterBase = suffix.slice(basePath.length);
+      if (!afterBase.startsWith("/")) return value;
+
+      const rewritten = basePath + afterBase.replace(/^\\/+/, "");
+      return absolute ? origin + rewritten : rewritten;
+    }
+
     const pathname = suffix.split(/[?#]/, 1)[0];
     if (!shouldRewritePath(pathname)) return value;
+
     const rewritten = basePath + suffix.slice(1);
     return absolute ? origin + rewritten : rewritten;
   }
@@ -1246,7 +1281,7 @@ function getServiceProxyScript(service) {
       return originalFetch.call(this, rewriteUrl(input), init);
     }
 
-    if (input instanceof Request) {
+    if (typeof Request !== "undefined" && input instanceof Request) {
       const nextUrl = rewriteUrl(input.url);
       if (nextUrl !== input.url) {
         return originalFetch.call(this, new Request(nextUrl, input), init);
@@ -1257,13 +1292,33 @@ function getServiceProxyScript(service) {
   };
 
   for (const method of ["pushState", "replaceState"]) {
-    const original = history[method];
-    history[method] = function patchedHistory(state, title, url) {
+    const original = window.history[method];
+    window.history[method] = function patchedHistory(state, title, url) {
       return original.call(this, state, title, url ? rewriteUrl(String(url)) : url);
     };
   }
 
-  document.cookie = "deploy_service_id=" + encodeURIComponent(serviceId) + "; path=/; SameSite=Lax";
+  const originalOpen = window.open;
+  window.open = function patchedOpen(url, target, features) {
+    return originalOpen.call(this, rewriteUrl(url), target, features);
+  };
+
+  document.addEventListener("click", (event) => {
+    const link = event.target && event.target.closest ? event.target.closest("a[href]") : null;
+    if (!link) return;
+
+    const href = link.getAttribute("href");
+    const rewritten = rewriteUrl(href);
+    if (rewritten !== href) {
+      link.setAttribute("href", rewritten);
+    }
+  }, true);
+
+  const currentUrl = window.location.pathname + window.location.search + window.location.hash;
+  const rewrittenCurrentUrl = rewriteUrl(currentUrl);
+  if (rewrittenCurrentUrl !== currentUrl) {
+    window.history.replaceState(window.history.state, document.title, rewrittenCurrentUrl);
+  }
 })();
 </script>`;
 }
@@ -1326,7 +1381,9 @@ function getProxyRequestPath(req, service) {
   const basePath = getServiceBasePath(service);
 
   if (parsed.pathname.startsWith(basePath)) {
-    const suffix = parsed.pathname.slice(basePath.length - 1);
+    const suffix = parsed.pathname
+      .slice(basePath.length - 1)
+      .replace(/^\/+/, "/");
     if (isServiceRootProxyPath(suffix)) {
       return `${suffix}${parsed.search}`;
     }
@@ -1360,10 +1417,18 @@ function getServiceFromRootProxyRequest(req) {
   const serviceId = refererServiceId || cookieServiceId;
 
   if (!serviceId) {
-    return null;
+    return getOnlyRunningService();
   }
 
   return services.get(serviceId) || null;
+}
+
+function getOnlyRunningService() {
+  const runningServices = Array.from(services.values()).filter((service) =>
+    serviceProcesses.has(service.id)
+  );
+
+  return runningServices.length === 1 ? runningServices[0] : null;
 }
 
 function getServiceIdFromUrl(value) {
@@ -1401,7 +1466,25 @@ function getProxyResponseHeaders(headers, service) {
     nextHeaders.location = rewriteProxyLocation(location, service);
   }
 
+  appendSetCookie(nextHeaders, getServiceCookieHeader(service));
   return nextHeaders;
+}
+
+function getServiceCookieHeader(service) {
+  return `deploy_service_id=${encodeURIComponent(service.id)}; Path=/; SameSite=Lax`;
+}
+
+function appendSetCookie(headers, cookie) {
+  const current = headers["set-cookie"];
+
+  if (!current) {
+    headers["set-cookie"] = cookie;
+    return;
+  }
+
+  headers["set-cookie"] = Array.isArray(current)
+    ? current.concat(cookie)
+    : [current, cookie];
 }
 
 function rewriteProxyLocation(location, service) {
