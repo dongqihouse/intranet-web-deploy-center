@@ -313,7 +313,7 @@ function parseServiceInput(body) {
   const port = Number(body.port);
   const projectSubdir = normalizeProjectSubdir(body.projectSubdir);
   const installCommand = String(
-    body.installCommand || "rm -rf node_modules && npm install"
+    body.installCommand || "rm -rf node_modules && npm install --include=dev"
   ).trim();
   const startCommand = String(body.startCommand || "").trim();
   const note = String(body.note || "").trim();
@@ -967,6 +967,7 @@ function spawnServiceCommand(service, command) {
 function commandEnv(service) {
   return {
     ...process.env,
+    NODE_ENV: process.env.SERVICE_NODE_ENV || "development",
     PORT: String(service.port),
     HOST: "0.0.0.0",
     HOSTNAME: "0.0.0.0",
@@ -974,6 +975,8 @@ function commandEnv(service) {
     VITE_PORT: String(service.port),
     npm_config_host: "0.0.0.0",
     npm_config_port: String(service.port),
+    npm_config_include: process.env.npm_config_include || "dev",
+    npm_config_production: process.env.npm_config_production || "false",
     NEXT_TELEMETRY_DISABLED: process.env.NEXT_TELEMETRY_DISABLED || "1",
     BROWSER: "none",
   };
